@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from math import comb, prod
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -29,12 +30,16 @@ def read_data(raw: bytes) -> pd.DataFrame:
 
 def main() -> None:
     st.set_page_config(page_title="Sorting Hat · 팀 성향 탐색", page_icon="🎩", layout="wide")
-    st.title("🎩 Sorting Hat")
-    st.write("직원의 성향을 살펴보고, 함께할 팀의 조합을 비교해 보세요.")
-    st.caption("Big Five 성향 구성 탐색 도구 · 유사성/다양성 지표는 업무성과나 직무 만족도 예측값이 아닙니다.")
+    st.html(f"<style>{(Path(__file__).parent / 'assets/style.css').read_text(encoding='utf-8')}</style>")
+    st.html('''<div class="topline"><span>Workspace &nbsp; / &nbsp; 팀 구성 스튜디오</span><span class="badge">TEAM EXPLORER</span></div>
+    <div class="hero"><div class="eyebrow">BETTER TOGETHER, BY DESIGN</div>
+    <h1>좋은 팀의 시작,<br>서로를 이해하는 것부터.</h1>
+    <p>구성원의 특성을 살펴보고, 함께할 때의 가능성을 발견하세요.<br>팀 구성 조건부터 후보 비교까지, 한곳에서.</p>
+    <div class="orbit" aria-hidden="true"><i></i><i></i><i></i></div></div>''')
 
     with st.sidebar:
-        st.header("1. 직원 데이터")
+        st.html('<div class="brand"><span class="brand-mark">✳</span> Sorting Hat</div><div class="brand-sub">TEAM DESIGN STUDIO</div>')
+        st.subheader("01 / 구성원 데이터")
         upload = st.file_uploader("직원 CSV 업로드", type=["csv"])
         st.caption("업로드하지 않으면 샘플 직원 20명을 사용합니다. 점수 범위는 0~100입니다.")
         st.download_button("샘플 CSV 다운로드", SAMPLE_EMPLOYEES_CSV.read_bytes(), "employees_sample.csv", "text/csv")
@@ -56,7 +61,7 @@ def main() -> None:
         st.info("분석 대상 부서를 선택해 직원을 2명 이상 포함해 주세요.")
         return
     with st.sidebar:
-        st.header("2. 팀 구성 조건")
+        st.subheader("02 / 팀 구성 조건")
         constrained = st.checkbox("직급별 인원 지정")
         constraints = None
         if constrained:
@@ -84,15 +89,19 @@ def main() -> None:
         cols[0].metric("분석 대상", f"{len(pool)}명")
         cols[1].metric("부서", f"{pool.current_department.nunique()}개")
         cols[2].metric("팀당 인원", f"{team_size}명")
-        st.subheader("직원별 성향 한눈에 보기")
-        matrix = pool.set_index(pool['name'].astype(str) + ' · ' + pool.employee_id.astype(str))[BIG5_COLUMNS].rename(columns=LABELS)
-        fig = px.imshow(matrix, zmin=0, zmax=100, color_continuous_scale="Teal", aspect="auto", labels={"x": "성향", "y": "직원", "color": "점수"})
-        fig.update_layout(height=max(360, min(850, len(pool) * 28)))
-        st.plotly_chart(fig, use_container_width=True)
         st.subheader("직원 프로필")
         person = st.selectbox("직원 선택", pool.index.tolist(), format_func=lambda i: f"{pool.loc[i, 'name']} · {pool.loc[i, 'employee_id']}")
         profile = pd.DataFrame({"성향": list(LABELS[c] for c in BIG5_COLUMNS), "선택 직원": pool.loc[person, BIG5_COLUMNS].astype(float).tolist(), "대상 직원 평균": pool[BIG5_COLUMNS].mean().tolist()})
-        st.plotly_chart(px.bar(profile.melt(id_vars="성향", var_name="구분", value_name="점수"), x="성향", y="점수", color="구분", barmode="group", range_y=[0, 100]), use_container_width=True)
+        fig = px.bar(
+            profile.melt(id_vars="성향", var_name="구분", value_name="점수"),
+            x="점수", y="성향", color="구분", orientation="h",
+            barmode="group", range_x=[0, 110], text="점수",
+            color_discrete_map={"선택 직원": "#2563EB", "대상 직원 평균": "#94A3B8"},
+        )
+        fig.update_traces(texttemplate="%{x:.1f}", textposition="outside", cliponaxis=False)
+        fig.update_layout(height=430, yaxis=dict(autorange="reversed"), xaxis=dict(tickvals=[0, 20, 40, 60, 80, 100]), legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("막대 길이와 숫자로 비교하세요. 대상 직원 평균은 현재 선택한 부서 기준이며, 이상적인 성향 점수를 뜻하지 않습니다.")
         with st.expander("원본 데이터 확인"):
             st.dataframe(pool.rename(columns=LABELS), hide_index=True, use_container_width=True)
 
