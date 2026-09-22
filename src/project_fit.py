@@ -1,4 +1,4 @@
-"""Transparent project requirement matching, independent of personality scores."""
+"""Transparent project requirement matching, independent of survey responses."""
 
 from io import BytesIO
 

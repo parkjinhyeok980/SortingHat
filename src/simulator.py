@@ -16,13 +16,3 @@ def analyze_team_candidates(teams: Iterable[pd.DataFrame]) -> pd.DataFrame:
         rows.append(row)
 
     return pd.DataFrame(rows)
-
-
-def get_top_similarity_teams(results: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
-    """Return teams with the highest personality similarity indicator."""
-    return results.sort_values("personality_similarity_score", ascending=False).head(top_n)
-
-
-def get_top_diversity_teams(results: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
-    """Return teams with the highest personality diversity indicator."""
-    return results.sort_values("personality_diversity_score", ascending=False).head(top_n)

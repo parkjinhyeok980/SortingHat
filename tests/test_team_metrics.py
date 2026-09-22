@@ -1,73 +1,52 @@
 import pandas as pd
-
-from src.team_metrics import analyze_team, calculate_pairwise_distances
-
-
-def test_pairwise_distances_for_two_members() -> None:
-    team = pd.DataFrame(
-        [
-            {
-                "employee_id": "E001",
-                "name": "직원01",
-                "rank": "팀장",
-                "current_department": "인사",
-                "extraversion": 0,
-                "agreeableness": 0,
-                "conscientiousness": 0,
-                "openness": 0,
-                "emotional_stability": 0,
-            },
-            {
-                "employee_id": "E002",
-                "name": "직원02",
-                "rank": "사원",
-                "current_department": "기획",
-                "extraversion": 3,
-                "agreeableness": 4,
-                "conscientiousness": 0,
-                "openness": 0,
-                "emotional_stability": 0,
-            },
-        ]
-    )
-
-    distances = calculate_pairwise_distances(team)
-
-    assert distances == [5.0]
+import pytest
+from src.config import PREFERENCE_COLUMNS, SURVEY_COLUMNS, SAMPLE_EMPLOYEES_CSV
+from src.data_loader import load_employees_csv
+from src.team_metrics import analyze_team, compare_member_preferences
+from src.sample_data import generate_sample
 
 
-def test_analyze_team_returns_core_metrics() -> None:
-    team = pd.DataFrame(
-        [
-            {
-                "employee_id": "E001",
-                "name": "직원01",
-                "rank": "팀장",
-                "current_department": "인사",
-                "extraversion": 70,
-                "agreeableness": 80,
-                "conscientiousness": 90,
-                "openness": 60,
-                "emotional_stability": 75,
-            },
-            {
-                "employee_id": "E002",
-                "name": "직원02",
-                "rank": "사원",
-                "current_department": "기획",
-                "extraversion": 50,
-                "agreeableness": 60,
-                "conscientiousness": 70,
-                "openness": 80,
-                "emotional_stability": 65,
-            },
-        ]
-    )
+def sample_team():
+    team = load_employees_csv(SAMPLE_EMPLOYEES_CSV).iloc[:2].copy()
+    team.loc[team.index[0], PREFERENCE_COLUMNS] = 1
+    team.loc[team.index[1], PREFERENCE_COLUMNS] = 5
+    return team
 
-    result = analyze_team(team)
 
-    assert result["member_ids"] == ["E001", "E002"]
-    assert result["extraversion_mean"] == 60.0
-    assert result["extraversion_range"] == 20.0
-    assert result["personality_diversity_score"] > 0
-    assert 0 < result["personality_similarity_score"] <= 1
+def test_item_summary_preserves_extremes_without_fit_total():
+    result = analyze_team(sample_team())
+    assert result["value_quality_mean"] == 3
+    assert result["value_quality_range"] == 4
+    assert set(result) == {"member_ids", "member_names"} | {f"{c}_{stat}" for c in PREFERENCE_COLUMNS for stat in ["mean", "range"]}
+
+
+def test_peer_reference_excludes_self_and_preserves_direction():
+    comparison = compare_member_preferences(sample_team())
+    assert comparison.iloc[0]["다른 팀원 평균"] == 5
+    assert comparison.iloc[0]["차이 (본인−동료)"] == -4
+    assert comparison.iloc[-1]["차이 (본인−동료)"] == 4
+
+
+def test_current_team_experience_does_not_transfer_to_candidate():
+    team = sample_team()
+    before = analyze_team(team)
+    columns = [c for c in SURVEY_COLUMNS if c not in PREFERENCE_COLUMNS]
+    team[columns] = 1
+    team["current_team_id"] = "OTHER"
+    assert analyze_team(team) == before
+
+
+def test_single_member_has_no_peer_comparison():
+    comparison = compare_member_preferences(sample_team().iloc[:1])
+    assert comparison["다른 팀원 평균"].isna().all()
+    assert comparison["차이 (본인−동료)"].isna().all()
+    with pytest.raises(ValueError):
+        analyze_team(sample_team().iloc[:0])
+
+
+def test_sample_is_reproducible_and_valid():
+    pd.testing.assert_frame_equal(generate_sample(), generate_sample())
+    employees = load_employees_csv(SAMPLE_EMPLOYEES_CSV)
+    assert len(employees) == 20
+    assert employees.employee_id.nunique() == 20
+    assert employees[SURVEY_COLUMNS].isin([1, 2, 3, 4, 5]).all().all()

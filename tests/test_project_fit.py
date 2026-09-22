@@ -1,11 +1,11 @@
 import pytest
 
 from app import read_data
-from src.config import SAMPLE_EMPLOYEES_CSV, BIG5_COLUMNS
+from src.config import SAMPLE_EMPLOYEES_CSV, SURVEY_COLUMNS
 from src.project_fit import analyze_project_candidates
 
 
-def test_skill_and_role_coverage_stays_independent_of_personality():
+def test_skill_and_role_coverage_stays_independent_of_survey():
     team = read_data(SAMPLE_EMPLOYEES_CSV.read_bytes()).iloc[:2].copy()
     team["planning"] = [40, 60]
     team["engineering"] = [20, 30]
@@ -16,7 +16,7 @@ def test_skill_and_role_coverage_stays_independent_of_personality():
     assert result.fit_score == pytest.approx(67.5 + result.sharing_bonus)
     assert result.missing_skills == ["개발"]
     assert result.missing_roles == ["개발"]
-    team[BIG5_COLUMNS] = 100
+    team[SURVEY_COLUMNS] = 5
     changed = analyze_project_candidates([team], ["planning", "engineering"], ["기획", "개발"], 60).iloc[0]
     assert changed.fit_score == result.fit_score
 

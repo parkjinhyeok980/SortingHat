@@ -10,8 +10,8 @@ from src.config import PROJECT_ROOT, SAMPLE_EMPLOYEES_CSV
 
 def test_csv_rejects_invalid_scores():
     employees = pd.read_csv(SAMPLE_EMPLOYEES_CSV)
-    employees["extraversion"] = employees["extraversion"].astype(float)
-    employees.loc[0, "extraversion"] = float("inf")
+    employees["value_quality"] = employees["value_quality"].astype(float)
+    employees.loc[0, "value_quality"] = float("inf")
     with pytest.raises(ValueError):
         read_data(employees.to_csv(index=False).encode("utf-8"))
 
@@ -23,7 +23,6 @@ def test_analysis_and_changed_inputs():
     app.button[0].click().run()
     assert not app.exception
     assert len(app.session_state['analysis_results']) == 190
-    app.radio[0].set_value("성향이 다양한 팀").run()
     assert not app.exception
     assert len(app.dataframe) >= 3
     app.number_input[0].set_value(3).run()
@@ -55,10 +54,27 @@ def test_requirements_change_invalidates_combined_results():
     app.number_input[0].set_value(2).run()
     app.button[0].click().run()
     results = app.session_state["analysis_results"]
-    assert {"fit_score", "skill_score", "role_score", "personality_diversity_score"} <= set(results.columns)
+    assert {"fit_score", "skill_score", "role_score", "value_quality_range"} <= set(results.columns)
     assert results.fit_score.between(0, 110).all()
     app.slider[0].set_value(90).run()
     assert "analysis_results" not in app.session_state
     app.multiselect[1].set_value([]).run()
     assert app.button[0].disabled
     assert not app.exception
+
+
+@pytest.mark.parametrize("column,value", [("value_quality", 0), ("observed_support_need", 6), ("perceived_values", 2.5), ("perceived_needs", "invalid"), ("perceived_goals", None)])
+def test_survey_scale_validation(column, value):
+    employees = pd.read_csv(SAMPLE_EMPLOYEES_CSV).astype({column: object})
+    employees.loc[0, column] = value
+    with pytest.raises(ValueError, match="1~5"):
+        read_data(employees.to_csv(index=False).encode("utf-8"))
+
+
+def test_missing_survey_and_team_context_rejected():
+    employees = pd.read_csv(SAMPLE_EMPLOYEES_CSV)
+    with pytest.raises(ValueError, match="필수 설문"):
+        read_data(employees.drop(columns="perceived_values").to_csv(index=False).encode("utf-8"))
+    employees.loc[0, "current_team_id"] = " "
+    with pytest.raises(ValueError, match="current_team_id"):
+        read_data(employees.to_csv(index=False).encode("utf-8"))
