@@ -1,0 +1,15 @@
+{
+  "rows_raw": 1470,
+  "rows_used": 1470,
+  "missing_target_removed": 0,
+  "duplicate_rows": 0,
+  "removed_columns": [
+    "EmployeeCount",
+    "EmployeeNumber",
+    "Over18",
+    "StandardHours"
+  ],
+  "missing_requested_columns": [],
+  "leavers": 237,
+  "attrition_rate": 0.16122448979591836
+}

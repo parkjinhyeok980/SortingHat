@@ -1,0 +1,19 @@
+|--- MonthlyIncome_per_1000 <= 2.44
+|   |--- OverTime_Yes <= 0.50
+|   |   |--- YearsAtCompany <= 2.50
+|   |   |   |--- class: 0
+|   |   |--- YearsAtCompany >  2.50
+|   |   |   |--- class: 0
+|   |--- OverTime_Yes >  0.50
+|   |   |--- class: 1
+|--- MonthlyIncome_per_1000 >  2.44
+|   |--- YearsAtCompany <= 2.50
+|   |   |--- JobSatisfaction <= 3.50
+|   |   |   |--- class: 0
+|   |   |--- JobSatisfaction >  3.50
+|   |   |   |--- class: 0
+|   |--- YearsAtCompany >  2.50
+|   |   |--- Department_Sales <= 0.50
+|   |   |   |--- class: 0
+|   |   |--- Department_Sales >  0.50
+|   |   |   |--- class: 0

@@ -1,0 +1,11 @@
+variable,VIF
+JobSatisfaction,1.002190610473749
+EnvironmentSatisfaction,1.0076108545179157
+WorkLifeBalance,1.0092129676742765
+YearsAtCompany,1.9451887449690324
+MonthlyIncome_per_1000,1.368550154691698
+DistanceFromHome,1.0027790466820752
+YearsSinceLastPromotion,1.626292692997278
+OverTime_Yes,1.0076302270826993
+Department_Research & Development,5.659380921032144
+Department_Sales,5.649588636254479

@@ -1,0 +1,15 @@
+split,leaf,rule,n,leavers,rate
+train,3,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes ≤ 0.5 AND YearsAtCompany ≤ 2.5,46,18,0.391304347826087
+train,4,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes ≤ 0.5 AND YearsAtCompany > 2.5,44,4,0.09090909090909091
+train,5,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes > 0.5,48,35,0.7291666666666666
+train,8,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany ≤ 2.5 AND JobSatisfaction ≤ 3.5,116,34,0.29310344827586204
+train,9,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany ≤ 2.5 AND JobSatisfaction > 3.5,53,5,0.09433962264150944
+train,11,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany > 2.5 AND Department_Sales ≤ 0.5,489,32,0.065439672801636
+train,12,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany > 2.5 AND Department_Sales > 0.5,233,38,0.1630901287553648
+validation,3,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes ≤ 0.5 AND YearsAtCompany ≤ 2.5,25,2,0.08
+validation,4,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes ≤ 0.5 AND YearsAtCompany > 2.5,29,4,0.13793103448275862
+validation,5,MonthlyIncome_per_1000 ≤ 2.4445 AND OverTime_Yes > 0.5,19,11,0.5789473684210527
+validation,8,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany ≤ 2.5 AND JobSatisfaction ≤ 3.5,47,13,0.2765957446808511
+validation,9,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany ≤ 2.5 AND JobSatisfaction > 3.5,24,5,0.20833333333333334
+validation,11,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany > 2.5 AND Department_Sales ≤ 0.5,197,21,0.1065989847715736
+validation,12,MonthlyIncome_per_1000 > 2.4445 AND YearsAtCompany > 2.5 AND Department_Sales > 0.5,100,15,0.15

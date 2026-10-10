@@ -1,194 +1,167 @@
-"""Interactive competency and Person–Group Fit explorer: python -m streamlit run app.py."""
-
-from math import comb, prod
-from pathlib import Path
-
-import pandas as pd
+"""HR 담당자를 위한 조직 수준 연관성 분석 대시보드."""
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
 import plotly.express as px
 import streamlit as st
+from sklearn.tree import plot_tree
+from analysis.preprocessing import prepare, DATA_PATH
+from analysis.eda import add_bands, rates, interpretation
+from analysis.statistical_tests import run_tests
+from analysis.logistic_regression import fit_logistic
+from analysis.decision_tree import fit_tree
+from analysis.retention import actions
 
-from src.config import PREFERENCE_ITEMS, PREFERENCE_COLUMNS, PERCEIVED_ITEMS, SAMPLE_EMPLOYEES_CSV
-from src.data_loader import read_employees
-from src.team_metrics import compare_member_preferences
-from src.simulator import analyze_team_candidates
-from src.project_fit import SKILLS, ROLES, PRESETS, analyze_project_candidates, rank_project_candidates
-from src.team_generator import generate_teams, generate_teams_with_rank_constraints
-
-
-LABELS = {c: item[0] for c, item in PREFERENCE_ITEMS.items()}
-LABELS.update({f"observed_{c}": f"현재 팀 관찰 · {item[0]}" for c, item in PREFERENCE_ITEMS.items()})
-LABELS.update({c: f"체감 적합성 · {item[0]}" for c, item in PERCEIVED_ITEMS.items()})
-LABELS.update(current_team_id="현재 소속팀", survey_example="최근 실제 사례 (샘플은 가상)")
-LABELS.update(SKILLS)
-LABELS.update(role="담당 역할", availability="투입 가능률")
-LABELS.update(employee_id="직원 ID", name="이름", rank="직급", current_department="부서")
-LIMIT = 20_000
+st.set_page_config(page_title='HR Retention Analytics', page_icon='◈', layout='wide')
 
 
-def read_data(raw: bytes) -> pd.DataFrame:
-    return read_employees(raw)
+@st.cache_data
+def load_data(file_bytes):
+    import io
+    return prepare(io.BytesIO(file_bytes))
 
 
-def main() -> None:
-    st.set_page_config(page_title="Sorting Hat · 팀 역량·집단 적합성 탐색", page_icon="🎩", layout="wide")
-    st.html(f"<style>{(Path(__file__).parent / 'assets/style.css').read_text(encoding='utf-8')}</style>")
-    st.html('''<div class="topline"><span>Workspace &nbsp; / &nbsp; 팀 구성 스튜디오</span><span class="badge">TEAM EXPLORER</span></div>
-    <div class="hero"><div class="eyebrow">BETTER TOGETHER, BY DESIGN</div>
-    <h1>좋은 팀의 시작,<br>서로를 이해하는 것부터.</h1>
-    <p>구성원의 특성을 살펴보고, 함께할 때의 가능성을 발견하세요.<br>팀 구성 조건부터 후보 비교까지, 한곳에서.</p>
-    <div class="orbit" aria-hidden="true"><i></i><i></i><i></i></div></div>''')
-
-    with st.sidebar:
-        st.html('<div class="brand"><span class="brand-mark">✳</span> Sorting Hat</div><div class="brand-sub">TEAM DESIGN STUDIO</div>')
-        st.subheader("01 / 구성원 데이터")
-        upload = st.file_uploader("직원 CSV 업로드", type=["csv"])
-        st.caption("업로드하지 않으면 샘플 직원 20명을 사용합니다. 역량·투입 가능률은 0~100, 설문 응답은 1~5입니다.")
-        st.download_button("샘플 CSV 다운로드", SAMPLE_EMPLOYEES_CSV.read_bytes(), "employees_sample.csv", "text/csv")
-    try:
-        raw = upload.getvalue() if upload is not None else SAMPLE_EMPLOYEES_CSV.read_bytes()
-        employees = read_data(raw)
-    except (ValueError, TypeError, UnicodeError, pd.errors.ParserError) as exc:
-        st.error(f"CSV를 확인해 주세요: {exc}")
-        st.info("샘플 CSV의 열 이름을 유지하고, 빈 값·중복 ID·숫자가 아닌 역량·집단 적합성 점수를 확인해 주세요. UTF-8 CSV를 사용하세요.")
-        return
-    if len(employees) < 2:
-        st.warning("팀 비교에는 직원이 최소 2명 필요합니다.")
-        return
-
-    with st.sidebar:
-        departments = st.multiselect("분석 대상 부서", employees.current_department.unique().tolist(), default=employees.current_department.unique().tolist())
-    pool = employees[employees.current_department.isin(departments)].reset_index(drop=True)
-    if len(pool) < 2:
-        st.info("분석 대상 부서를 선택해 직원을 2명 이상 포함해 주세요.")
-        return
-    with st.sidebar:
-        st.subheader("02 / 팀 구성 조건")
-        constrained = st.checkbox("직급별 인원 지정")
-        constraints = None
-        if constrained:
-            constraints = {
-                rank: int(st.number_input(f"{rank} 인원", min_value=0, max_value=int(count), value=1, step=1))
-                for rank, count in pool['rank'].value_counts().items()
-            }
-            team_size = sum(constraints.values())
-            candidate_count = prod(comb(int((pool['rank'] == rank).sum()), count) for rank, count in constraints.items())
-            st.write(f"팀당 {team_size}명")
-        else:
-            team_size = int(st.number_input("팀당 인원", min_value=2, max_value=len(pool), value=min(5, len(pool)), step=1))
-            candidate_count = comb(len(pool), team_size)
-        st.metric("가능한 팀 조합", f"{candidate_count:,}개")
-        valid = team_size >= 2 and candidate_count <= LIMIT
-        if team_size < 2:
-            st.warning("팀 인원을 2명 이상 지정해 주세요.")
-        if candidate_count > LIMIT:
-            st.warning(f"한 번에 {LIMIT:,}개까지 분석합니다. 부서나 직급 조건을 좁혀 주세요.")
-        st.subheader("03 / 프로젝트 요구사항")
-        preset = st.selectbox("프로젝트 유형", list(PRESETS))
-        required_skills = st.multiselect("필요 역량", list(SKILLS), default=PRESETS[preset]["skills"], format_func=SKILLS.get, key=f"skills_{preset}")
-        required_roles = st.multiselect("필요 역할", ROLES, default=PRESETS[preset]["roles"], key=f"roles_{preset}")
-        target = st.slider("역량 목표 수준", 1, 100, 70)
-        valid = valid and bool(required_skills) and bool(required_roles)
-        if not required_skills or not required_roles:
-            st.warning("필요 역량과 역할을 각각 하나 이상 선택해 주세요.")
-        run = st.button("팀 조합 분석하기", type="primary", disabled=not valid, use_container_width=True)
-
-    overview, results_tab = st.tabs(["직원 역량·집단 적합성 둘러보기", "팀 조합 비교"])
-    with overview:
-        cols = st.columns(3)
-        cols[0].metric("분석 대상", f"{len(pool)}명")
-        cols[1].metric("부서", f"{pool.current_department.nunique()}개")
-        cols[2].metric("팀당 인원", f"{team_size}명")
-        st.subheader("직원 프로필")
-        person = st.selectbox("직원 선택", pool.index.tolist(), format_func=lambda i: f"{pool.loc[i, 'name']} · {pool.loc[i, 'employee_id']}")
-        st.caption(f"담당 역할: {pool.loc[person, 'role']} · 투입 가능률: {pool.loc[person, 'availability']:.0f}%")
-        skills_profile = pd.DataFrame({"역량": list(SKILLS.values()), "선택 직원": pool.loc[person, list(SKILLS)].astype(float).tolist(), "대상 직원 평균": pool[list(SKILLS)].mean().tolist()})
-        st.plotly_chart(px.bar(skills_profile.melt(id_vars="역량", var_name="구분", value_name="점수"), x="역량", y="점수", color="구분", barmode="group", range_y=[0, 100], title="업무 역량"), use_container_width=True)
-        st.subheader("개인–집단 적합성 참고 설문")
-        st.caption("자체 제작한 예시 문항입니다. 검증된 MPPGF 번역본이나 채점 도구가 아니며 총점·합격선을 제시하지 않습니다.")
-        selected_person = pool.loc[person]
-        st.write(f"현재 소속팀: {selected_person.current_team_id}")
-        perceived = pd.DataFrame({"차원": [v[0] for v in PERCEIVED_ITEMS.values()], "설문 문항": [v[1] for v in PERCEIVED_ITEMS.values()], "응답": [int(selected_person[c]) for c in PERCEIVED_ITEMS]})
-        st.dataframe(perceived, hide_index=True, use_container_width=True)
-        st.caption("현재 팀에 대한 체감: 1 전혀 그렇지 않다 · 2 그렇지 않다 · 3 보통 · 4 그렇다 · 5 매우 그렇다. 새 팀 후보 평가에는 이 응답을 사용하지 않습니다.")
-        preference = pd.DataFrame({"항목": [v[0] for v in PREFERENCE_ITEMS.values()], "1의 의미": [v[1] for v in PREFERENCE_ITEMS.values()], "5의 의미": [v[2] for v in PREFERENCE_ITEMS.values()], "나의 선호": [selected_person[c] for c in PREFERENCE_COLUMNS], "현재 팀 방식 (본인 관찰)": [selected_person[f"observed_{c}"] for c in PREFERENCE_COLUMNS]})
-        preference["차이 (선호−관찰)"] = preference["나의 선호"] - preference["현재 팀 방식 (본인 관찰)"]
-        st.subheader("나의 선호와 현재 팀 방식 비교")
-        st.dataframe(preference, hide_index=True, use_container_width=True)
-        st.caption("두 관점 모두 같은 1~5 척도입니다. 2~4는 양 끝 사이의 정도이며 높은 값이 더 좋은 것은 아닙니다. 관찰값은 응답자의 인식이며 객관적으로 측정된 팀 특성은 아닙니다.")
-        if "survey_example" in selected_person and pd.notna(selected_person.survey_example):
-            st.write(f"최근 사례: {selected_person.survey_example}")
-        with st.expander("원본 데이터 확인"):
-            st.dataframe(pool.rename(columns=LABELS), hide_index=True, use_container_width=True)
-
-    # Bind results to their exact input so changed controls never show stale rankings.
-    signature = ("pg-fit-v3", raw, tuple(departments), team_size, tuple(constraints.items()) if constraints else None, tuple(required_skills), tuple(required_roles), target)
-    if st.session_state.get("analysis_signature") != signature:
-        st.session_state.pop("analysis_results", None)
-    if run and valid:
-        with st.spinner(f"{candidate_count:,}개 팀의 역량과 개인 선호을 분석하고 있습니다…"):
-            teams = generate_teams_with_rank_constraints(pool, constraints) if constraints else generate_teams(pool, team_size)
-            teams = list(teams)
-            preferences = analyze_team_candidates(teams)
-            competencies = analyze_project_candidates(teams, required_skills, required_roles, target)
-            st.session_state.analysis_results = preferences.merge(competencies.drop(columns=["member_ids", "member_names"]), on="team_id", validate="one_to_one")
-            st.session_state.analysis_signature = signature
-
-    with results_tab:
-        if "analysis_results" not in st.session_state:
-            st.info("왼쪽에서 조건을 설정하고 ‘팀 조합 분석하기’를 누르면 순위와 상세 비교가 표시됩니다.")
-            return
-        results = st.session_state.analysis_results
-        st.success(f"{len(results):,}개 조합 분석 완료")
-        st.caption("각 행은 독립적인 팀 후보입니다. 서로 다른 후보에 같은 직원이 포함될 수 있습니다.")
-        st.caption("역량 상호 보완성을 먼저, 수준·공유 점수를 다음으로 비교합니다. 설문은 항목별 대화 참고자료이며 매칭 점수에 합산하지 않습니다.")
-        ranked = rank_project_candidates(results)
-        top_n = st.select_slider("상위 후보 수", options=[5, 10, 20], value=5)
-        top = ranked.head(top_n)
-        table = top[["team_id", "member_names", "complementarity_score", "sharing_bonus", "fit_score", "skill_score", "role_score"]].copy()
-        table['member_names'] = table.member_names.apply(lambda names: ", ".join(map(str, names)))
-        table.columns = ["팀 ID", "구성원", "상호 보완성", "공유 보너스", "수준·공유 점수", "역량 충족도", "역할 충족도"]
-        st.dataframe(table, hide_index=True, use_container_width=True)
-        st.subheader("선택한 팀 자세히 보기")
-        selected = st.selectbox("팀 후보 선택", top.team_id.tolist())
-        row = results.set_index("team_id").loc[selected]
-        members = pool[pool.employee_id.isin(row.member_ids)]
-        fit_cols = st.columns(5)
-        fit_cols[0].metric("수준·공유 점수 / 110", f"{row.fit_score:.1f}")
-        fit_cols[3].metric("상호 보완성 / 100", f"{row.complementarity_score:.1f}")
-        fit_cols[4].metric("공유 보너스 / 10", f"{row.sharing_bonus:.2f}")
-        fit_cols[1].metric("역량 충족도 / 100", f"{row.skill_score:.1f}")
-        fit_cols[2].metric("역할 충족도 / 100", f"{row.role_score:.1f}")
-        st.caption(f"목표 미달 역량: {', '.join(row.missing_skills) or '없음'} · 미충족 역할: {', '.join(row.missing_roles) or '없음'} · 팀 내 최소 투입 가능률: {row.minimum_availability:.0f}%")
-        with st.expander("지식 공유 보너스 근거"):
-            if row.sharing_links:
-                for link in row.sharing_links:
-                    st.write(link)
-            else:
-                st.write("현재 기준을 충족하는 공유 연결이 없습니다.")
-        coverage = pd.DataFrame({"역량": [SKILLS[c] for c in required_skills], "팀 내 최고 점수": members[required_skills].max().tolist(), "팀 평균": members[required_skills].mean().tolist()})
-        figure = px.bar(coverage.melt(id_vars="역량", var_name="구분", value_name="점수"), x="역량", y="점수", color="구분", barmode="group", range_y=[0, 100], title="프로젝트 필요 역량")
-        figure.add_hline(y=target, line_dash="dash", annotation_text=f"목표 {target}")
-        st.plotly_chart(figure, use_container_width=True)
-        st.subheader("새 팀 후보 · 항목별 선호 차이")
-        summary = pd.DataFrame({"항목": [v[0] for v in PREFERENCE_ITEMS.values()], "1의 의미": [v[1] for v in PREFERENCE_ITEMS.values()], "5의 의미": [v[2] for v in PREFERENCE_ITEMS.values()], "팀원 평균": [row[f"{c}_mean"] for c in PREFERENCE_COLUMNS], "팀 내 최소": members[PREFERENCE_COLUMNS].min().tolist(), "팀 내 최대": members[PREFERENCE_COLUMNS].max().tolist(), "선호 범위 (최대−최소)": [row[f"{c}_range"] for c in PREFERENCE_COLUMNS]})
-        st.dataframe(summary, hide_index=True, use_container_width=True)
-        st.caption("평균은 후보 구성원의 선호 평균이며 새 팀의 실제 방식이 아닙니다. 선호가 비슷하다고 필요가 충족되는 것은 아닙니다. 차이가 있는 항목을 보고 공유 주기·자율성·지원 방식을 함께 정하세요.")
-        comparisons = compare_member_preferences(members)
-        st.dataframe(comparisons, hide_index=True, use_container_width=True)
-        st.caption("다른 팀원 평균은 본인을 제외합니다. 부호는 선호 방향, 절댓값은 차이의 크기를 나타냅니다. 차이는 설명용이며 검증된 적합성 점수가 아닙니다.")
-        spread = members.assign(직원=members['name'].astype(str) + ' · ' + members.employee_id.astype(str)).melt(id_vars="직원", value_vars=PREFERENCE_COLUMNS, var_name="항목", value_name="응답")
-        spread["항목"] = spread["항목"].map(LABELS)
-        st.plotly_chart(px.scatter(spread, x="항목", y="응답", color="직원", range_y=[0.5, 5.5], title="팀원별 선호 응답 · 1~5"), use_container_width=True)
-        st.dataframe(members.rename(columns=LABELS), hide_index=True, use_container_width=True)
-        with st.expander("지표는 어떻게 읽나요?"):
-            st.write("역량 충족도는 필요 역량별 팀 내 최고 점수를 목표 수준으로 나눈 값(최대 100%)의 평균입니다. 역할 충족도는 필요한 역할 중 담당자가 있는 비율입니다. 기본 정렬은 상호 보완성을 최우선으로 합니다. 각 팀원이 필요 역량 하나씩을 나눠 맡는 최적 배치에서 목표 충족률의 평균을 계산하며, 맡을 사람이 없는 역량은 0점입니다. 보완성이 같으면 역량 70% + 역할 30% + 공유 보너스(최대 10점)로 정렬합니다. 공유 보너스는 전체 5개 역량 중 공동 2위(경쟁 순위)이면서 목표의 50% 이상이거나, 목표의 80% 이상인 역량에 대해 목표 이상이며 자신보다 점수가 높은 동료가 있을 때 부여합니다. 역량별 최고점 동료 한 명만 연결하고, 연결별 min(본인 점수/목표, 1)의 합을 (팀원 수−1) × 필요 역량 수로 나눠 10을 곱합니다. 동점 최고점자는 데이터 순서상 첫 사람을 표시합니다. 공유 가능성은 점수 기반 가정입니다. 개인–집단 적합성 설문은 항목별 참고자료로 표시합니다. 투입 가능률은 참고값이며 후보 제외 조건은 아닙니다.")
-            st.write("현재 팀에 대한 체감 설문과 개인 선호·팀 관찰 응답은 맥락을 구분합니다. 새 팀 후보에는 개인 선호만 비교하며, 직접 체감 응답을 이전하거나 총점으로 합산하지 않습니다.")
-            st.markdown("이론 참고: [Li 외, MPPGF 척도 개발 연구](https://onlinelibrary.wiley.com/doi/10.1111/peps.12295). 이 앱은 해당 척도를 재현한 것이 아닙니다.")
-        export = ranked.copy()
-        for column in ["member_ids", "member_names", "missing_skills", "missing_roles", "sharing_links"]:
-            export[column] = export[column].apply(lambda values: ", ".join(map(str, values)))
-        st.download_button("전체 분석 결과 CSV 다운로드", export.to_csv(index=False).encode("utf-8-sig"), "team_analysis.csv", "text/csv")
+@st.cache_data
+def analyze(df):
+    results = {'tests': run_tests(df), 'actions': actions(df)}
+    for name, method in [('logistic', fit_logistic), ('tree', fit_tree)]:
+        try:
+            results[name] = method(df)
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+            results[name] = {'error': str(exc)}
+    return results
 
 
-if __name__ == "__main__":
-    main()
+st.title('HR Retention Analytics')
+st.caption('직원 이탈 영향요인 분석 및 Retention 전략 도출 · ADsP 분석 포트폴리오')
+st.warning('공개 IBM HR 계열의 가상·교육용 데이터입니다. 실제 IBM 직원 현황이나 정책 효과를 뜻하지 않습니다. 관찰된 관련성은 인과관계가 아니며 개인 평가·퇴사자 지정에 사용하지 않습니다.')
+df, audit = load_data(DATA_PATH.read_bytes())
+results = analyze(df)
+st.sidebar.title('분석 탐색')
+page = st.sidebar.radio('분석 단계', ['Workforce Overview', 'Attrition Diagnosis', 'Statistical Analysis', 'Attrition Drivers', 'HR Action'])
+st.sidebar.caption(f'분석 모집단: {len(df):,}명 · 필터 없는 전체 자료\n\n관찰기간 정보가 없어 퇴사율은 표본 내 퇴사 비율입니다. 연간 이직률이 아닙니다.')
+st.sidebar.info('개별 직원 조회·예측 기능 없이 집단 단위 결과만 제공합니다.')
+
+if page == 'Workforce Overview':
+    st.header('01 · Workforce Overview')
+    metrics = [('전체 직원 수', f'{len(df):,}명'), ('퇴사자 수', f'{df.Attrition.sum():,}명'), ('관찰 퇴사율', f'{df.Attrition.mean():.1%}')]
+    for c, label in [('YearsAtCompany', '평균 근속연수'), ('MonthlyIncome', '평균 월급(원자료 단위)')]:
+        if c in df:
+            metrics.append((label, f'{df[c].mean():,.2f}'))
+    for col, (label, value) in zip(st.columns(len(metrics)), metrics):
+        col.metric(label, value)
+    st.subheader('HR 문제 정의')
+    st.write('어떤 근무환경·보상·근속·만족도 특성이 직원 이탈과 관련되는지 확인하고, 조직 차원의 점검과 정책 실험 우선순위를 제안합니다.')
+    st.write('전처리 → 기술통계 → 가설검정 → 다변량 로지스틱 회귀 → 얕은 의사결정나무 → Retention 정책 가설')
+    st.subheader('퇴사자와 재직자의 특성')
+    cols = [c for c in ['Age', 'MonthlyIncome', 'YearsAtCompany', 'JobSatisfaction', 'EnvironmentSatisfaction', 'DistanceFromHome'] if c in df]
+    summary = df.groupby('Attrition')[cols].agg(['mean', 'median', 'count'])
+    summary.index = summary.index.map({0: '재직', 1: '퇴사'})
+    st.dataframe(summary, width='stretch')
+    st.caption('평균·중앙값·비결측 표본 수. 급여와 통근거리는 원자료 메타데이터의 단위가 확정되지 않아 통화/거리 단위를 임의로 붙이지 않습니다.')
+    with st.expander('전처리 판단과 데이터 품질'):
+        st.json({k: v for k, v in audit.items() if k not in ['schema', 'outliers']})
+        st.dataframe(audit['schema'], width='stretch')
+        st.dataframe(audit['outliers'], width='stretch')
+        st.write('IQR 이상치 표시는 점검용입니다. 고연차·고보상은 실제 가능한 값이므로 제거하지 않습니다. 결측치는 단변량 분석별 제외, 모델은 선택 변수 완전사례 분석을 사용합니다. 식별자·상수만 제외하고 원본 CSV는 보존합니다.')
+
+elif page == 'Attrition Diagnosis':
+    st.header('02 · Attrition Diagnosis')
+    banded = add_bands(df)
+    labels = {'Department': '부서', 'JobRole': '직무', 'JobLevel': '직급', 'TenureBand': '근속연수', 'OverTime': '초과근무', 'JobSatisfaction': '직무만족도', 'IncomeBand': '급여 사분위 구간', 'PromotionBand': '마지막 승진 이후 연수'}
+    for c, label in labels.items():
+        if c not in banded:
+            continue
+        table = rates(banded, c)
+        st.subheader(label)
+        table['upper'], table['lower'] = table.ci_high-table.rate, table.rate-table.ci_low
+        fig = px.bar(table, x=c, y='rate', error_y='upper', error_y_minus='lower', hover_data=['n', 'leavers'], color_discrete_sequence=['#236653'])
+        fig.update_layout(yaxis_tickformat='.0%', xaxis_title=label, yaxis_title='관찰 퇴사율', height=360)
+        fig.add_hline(y=df.Attrition.mean(), line_dash='dot', annotation_text='전체 비율')
+        st.plotly_chart(fig, width='stretch')
+        st.write(interpretation(table, c))
+        with st.expander('집단 크기·95% Wilson 신뢰구간'):
+            st.dataframe(table.drop(columns=['upper', 'lower']), width='stretch')
+    st.caption('구간은 탐색 목적입니다. 오차막대 중첩 여부만으로 집단 차이의 유의성을 판정하지 않습니다. 0년 승진대기는 최근 승진과 무승진을 구별하지 못할 수 있습니다.')
+
+elif page == 'Statistical Analysis':
+    st.header('03 · Statistical Analysis')
+    st.info('유의수준 0.05. 아래 검정 전체를 한 검정군으로 Holm 보정합니다. 독립 관측을 가정하며 표본 추출 방식은 알려져 있지 않습니다. 순서형 만족도는 순위 검정으로 보완합니다.')
+    table = results['tests']
+    st.dataframe(table[['test', 'n', 'statistic', 'p_value', 'p_holm', 'decision']], width='stretch')
+    for row in table.to_dict('records'):
+        with st.expander(row['test'] + ' · ' + row['decision']):
+            st.write(f"H₀: {row['H0']} / H₁: {row['H1']}")
+            st.write(f"검정통계량={row['statistic']:.4g}, p={row['p_value']:.4g}, Holm p={row['p_holm']:.4g}, α=0.05")
+            st.write(row['effect'])
+            st.caption(row['assumptions'])
+            st.write(row['HR_interpretation'])
+    st.download_button('검정 결과 CSV', table.to_csv(index=False).encode('utf-8-sig'), 'statistical_tests.csv')
+
+elif page == 'Attrition Drivers':
+    st.header('04 · Attrition Drivers')
+    st.subheader('다른 선택 요인을 함께 고려한 로지스틱 회귀')
+    result = results['logistic']
+    if 'error' in result:
+        st.error(result['error'])
+    else:
+        st.write(f"완전사례 {result['n']:,}명 · 결측 제외 {result['excluded']}명 · 계수당 퇴사 사건 수 {result['events_per_parameter']:.1f}")
+        st.caption(f"기준집단: {result['references']}. 연속형은 1단위 증가, 급여는 1,000 원자료 단위 증가에 대한 OR입니다.")
+        table = result['table'].copy()
+        table['upper'], table['lower'] = table.CI_high-table.OR, table.OR-table.CI_low
+        fig = px.scatter(table, x='OR', y='variable', error_x='upper', error_x_minus='lower', log_x=True)
+        fig.add_vline(x=1, line_dash='dot')
+        fig.update_layout(height=500, xaxis_title='Odds Ratio · 95% CI', yaxis_title='')
+        st.plotly_chart(fig, width='stretch')
+        st.dataframe(result['table'], width='stretch')
+        st.write('OR>1은 퇴사 오즈가 높고 OR<1은 낮다는 관련성입니다. 확률 배수나 정책의 인과효과가 아닙니다. 신뢰구간은 탐색적·개별 95% 구간이며 회귀 p-value는 다중검정 보정 전입니다.')
+        st.caption('근속·급여와 중복되는 직급/총경력/현재 직무기간은 기본 모델에서 제외했습니다. 부서·초과근무·만족도·워라밸·근속·급여·통근·승진대기를 통제하며, 연령 등 미포함 요인의 잔여 교란은 남습니다. 만족도 등은 선형 추세를 가정합니다. 서로 다른 단위의 OR로 중요도 순위를 매기지 않습니다.')
+        with st.expander('다중공선성(VIF) 및 추정 주의점'):
+            st.dataframe(result['vif'], width='stretch')
+            st.write('VIF>5는 점검 신호이며 자동 삭제 기준은 아닙니다. 범주형 더미별 VIF입니다.')
+            if (result['vif'].VIF > 5).any():
+                st.warning('VIF 5 초과 항목이 있습니다. 작은 기준집단을 공유하는 부서 더미 간 상관도 포함되므로 계수의 불확실성과 기준집단을 함께 확인하세요.')
+            for warning in result['warnings']:
+                st.warning(warning)
+    st.subheader('해석 가능한 의사결정나무')
+    tree = results['tree']
+    if 'error' in tree:
+        st.error(tree['error'])
+    else:
+        st.caption('학습 70% / 검증 30%, 층화 분할, seed=42. 최대 깊이 3, 최소 리프 40명. 각 노드의 value=[재직, 퇴사]입니다.')
+        fig, ax = plt.subplots(figsize=(22, 10))
+        plot_tree(tree['model'], feature_names=tree['features'], class_names=['Stay', 'Leave'], filled=True, rounded=True, fontsize=8, ax=ax)
+        st.pyplot(fig)
+        plt.close(fig)
+        st.write(f"학습 기준 퇴사율 {tree['train_base']:.1%} · 검증 기준 {tree['validation_base']:.1%}")
+        st.dataframe(tree['rules'], width='stretch')
+        st.caption('학습에서 찾은 규칙을 검증 집단에 적용했습니다. 작은 검증 리프는 불안정하며, 재현되지 않는 패턴은 정책 근거로 삼지 않습니다. 모든 규칙은 실제 적합한 트리에서 추출했습니다.')
+        st.dataframe(tree['importance'], width='stretch')
+        st.caption('불순도 감소 중요도는 분할 기여도입니다. 연속형 변수에 유리할 수 있고 상관된 변수 사이에 중요도가 분산됩니다. 인과적 중요도는 아닙니다.')
+
+else:
+    st.header('05 · HR Action')
+    st.write('집단과 나머지 직원의 관찰 비율을 비교합니다. 30명 이상, 더 높은 관찰 퇴사율, 집단 비교 Fisher 검정의 Holm p<0.05를 모두 만족하면 우선 점검합니다. 정책 효과를 검증한 결과는 아닙니다.')
+    action_table = results['actions']
+    st.dataframe(action_table, width='stretch')
+    for row in action_table.to_dict('records'):
+        with st.container(border=True):
+            st.subheader(f"{row['priority']} · {row['group']}")
+            st.write(f"{row['n']}명 중 {row['leavers']}명 퇴사 · {row['rate']:.1%} · 나머지 대비 {row['difference_pp']:+.1f}%p · Holm p={row['p_holm']:.4g}")
+            st.write('점검안: ' + row['policy'])
+            st.caption('후속 측정: ' + row['follow_up_metric'])
+    st.info('집단은 서로 겹칩니다. 인원수를 합산하거나 개인을 고위험자로 지정하지 않습니다. 급여 하위 집단은 동급 내 상대 기준일 뿐 저보상 판정이 아닙니다.')
+    st.subheader('통계·모델 결과를 함께 읽기')
+    logistic = results['logistic']
+    if 'error' not in logistic:
+        evidence = logistic['table']
+        st.dataframe(evidence[(evidence.CI_low > 1) | (evidence.CI_high < 1)], width='stretch')
+        st.caption('선택 변수를 통제한 탐색적 95% CI가 1을 포함하지 않는 요인입니다. 단변량 차이와 방향을 함께 확인하되, 이 표만으로 정책 우선순위를 확정하지 않습니다.')
+    tree = results['tree']
+    if 'error' not in tree:
+        st.write('트리 규칙의 검증 집단 관찰 결과')
+        st.dataframe(tree['rules'].query("split == 'validation'").drop(columns='split'), width='stretch')
+        st.caption('학습 규칙은 검증 집단에서도 재현되는지 확인합니다. 작은 리프의 높은 비율만으로 정책 대상을 정하지 않습니다. 학습·검증 비교는 Attrition Drivers에서 볼 수 있습니다.')
+    st.write('현장 맥락 확인 → 익명 설문·업무량 자료로 가설 보완 → 일부 조직에서 정책 시범 운영 → 비교 집단과 전후 추세로 유지율·만족도·업무부담 평가')
+    st.caption('정책 시행 시점·퇴사 시점·추적 관측이 없어 정책 효과나 미래 연간 이탈률을 추정할 수 없습니다.')
